@@ -1,0 +1,193 @@
+---
+title: "Basic Analysis Redone"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#Defines the thresholds to be county specific
+library(tsModel)
+library(ggplot2)
+library(gnm)
+library(splines)
+library(AER)
+library(cowplot)
+library(dplyr)
+
+#Meta-analysis packages
+library(metafor)
+library(mvmeta)
+```
+
+```{r}
+#Loading and cleaning the data
+dailyCT<-read.csv("/Users/kevin/Documents/ChenLabResearch/HurricaneProject/NCExposureData.csv",header = T)%>% 
+  dplyr::select(-X,-caseControl)
+dailyCT$date<-as.Date(dailyCT$date)
+
+#Add the 7th lag
+dailyCT$prcp95th_lag7 <- tsModel::Lag(dailyCT$prcp95th_lag0, 7, group = as.factor(dailyCT$FIPS))
+
+#Now we load the cause specific mortality data
+mdata <- read.csv("/Users/kevin/Documents/ChenLabResearch/HurricaneProject/Coding/DataSources/CauseSpecificMortality.csv", header = TRUE)
+mdata$date <- as.Date(mdata$date)
+
+#Now we create the temperature lags within each county 
+regions <- as.character(unique(dailyCT$FIPS))
+dlist <- lapply(regions,function(x) dailyCT[dailyCT$FIPS==x,])
+names(dlist) <- regions
+for(i in seq(length(dlist))) {
+  #Print to keep track of the county we are on
+  cat(i,"")
+  
+  #Extract the data
+  data <- dlist[[i]]
+  
+  #Lags
+  data$templag0<-data$temp
+  data$templag1<-Lag(data$temp,1)
+  data$templag2<-Lag(data$temp,2)
+  data$templag3<-Lag(data$temp,3)
+  data$templag4<-Lag(data$temp,4)
+  data$templag5<-Lag(data$temp,5)
+  data$templag6<-Lag(data$temp,6)
+  data$templag7<-Lag(data$temp,7)
+  
+  #time
+  data$time<-c(1:length(data$date))
+  
+  if(i==1){
+    lagresult<-data
+  }else{
+      lagresult<-rbind(lagresult,data)
+  }
+}
+
+
+lagresult<-dplyr::select(lagresult,-totdeath)
+alldata<-dplyr::left_join(mdata,lagresult,by=c("FIPS","date"))
+
+#Because we want to get rid of the index column
+mydata <- alldata[,-1]
+```
+
+
+```{r}
+#Now we run our models using the different mortality types. We define the mortalities and the exposure lags
+vars <- c("totdeath", "death_nonacc", "death_CVD", "death_RSD", "death_external")
+lags <-  c("prcp95th_lag0","prcp95th_lag1","prcp95th_lag2","prcp95th_lag3","prcp95th_lag4","prcp95th_lag5","prcp95th_lag6", "prcp95th_lag7")
+
+#Now define the regions and separate the FIPs in the general data frame into lists
+regions <- as.character(unique(mydata$FIPS))
+dlist <- lapply(regions,function(x) mydata[mydata$FIPS==x,])
+names(dlist) <- regions
+
+#Loop through the different mortalities
+mod_results <- data.frame()
+for(death_type in vars){
+  #Define a data frame to hold the model results
+  metaresults <- data.frame(cat=lags, fit = NA, se = NA)
+  
+  #For loop to loop through the FIPs
+  for(i in seq(length(dlist))){
+    #Print the FIPs as we run through the for loop
+    cat(i, "")
+    
+    #Extract the data
+    subdata <- dlist[[i]]
+    
+    #Now define the for loop through the lag days for the actual model
+    for(j in 0:7){
+      #To get around the algorithm not converging for some counties
+      if(death_type == "totdeath"){
+        mod1 <- glm(subdata[, death_type] ~ as.factor(subdata[, paste0("prcp95th_lag", j)]) 
+                    + ns(time, 4*7) + ns(subdata[, paste0("templag", j)], 5) + dow,
+                    data = subdata, family = quasipoisson)
+      }else{
+        trynext = try(
+        mod1 <- glm(subdata[, death_type] ~ as.factor(subdata[, paste0("prcp95th_lag", j)]) 
+                    + ns(time, 4*7) + ns(subdata[, paste0("templag", j)], 5) + dow,
+                    data = subdata, family = quasipoisson), silent = F)
+        #To get around the algorithm not converging for some counties
+        if("try-error" %in% class(trynext)){
+          next
+        }
+      
+        mod1 <- glm(subdata[, death_type] ~ as.factor(subdata[, paste0("prcp95th_lag", j)]) 
+                      + ns(time, 4*7) + ns(subdata[, paste0("templag", j)], 5) + dow,
+                      data = subdata, family = quasipoisson)
+      }
+      metaresults[j+1, 2:3] <- c(summary(mod1)$coef[2,1], summary(mod1)$coef[2,2])
+      metaresults$dis[j+1] <- death_type
+      metaresults$county[j+1] <- unique(subdata$FIPS)
+    }
+    #Create a data frame to hold the results
+    if(i == 1){
+      results <- metaresults
+    }else{
+      results <- rbind(results, metaresults)
+    }
+  }
+  mod_results <- rbind(mod_results, results)
+}
+
+output_results <- lapply(vars, function(x) mod_results[mod_results$dis == x, ])
+```
+
+```{r}
+temp <- output_results
+```
+
+```{r}
+#Now we conduct the meta-analysis
+#Get rid of the NAs and redefine the lags, vars, along with a new metaresults dataframe
+countyresult<-na.omit(temp)
+vars <- c("totdeath", "death_nonacc", "death_CVD", "death_RSD", "death_external")
+lags <-  c("prcp95th_lag0","prcp95th_lag1","prcp95th_lag2","prcp95th_lag3","prcp95th_lag4","prcp95th_lag5","prcp95th_lag6", "prcp95th_lag7")
+
+
+for(i in 1:length(vars)){
+  #First subset the lists to the correct death type
+  cat(vars[i], "")
+  data <- countyresult[[i]]
+  
+  #Now define a data frame to hold the model results for each lag type
+  metaresults <- data.frame(cat=lags, fit = NA, low = NA, upper = NA)
+  
+  #Now we can run the meta-analysis model
+  for(j in seq(length(lags))){
+    #Print the lag we are on
+    cat(j, "")
+    #Subset the data further on the lag type
+    prcp_lag <- subset(data, data$cat == lags[j])
+    
+    fit_est <- prcp_lag$fit
+    fit_se <- prcp_lag$se
+    
+    #Now for the meta-analysis model
+    metamod <- rma(yi = fit_est, sei = fit_se, data = prcp_lag, method = "REML")
+    metaresults[j, 2] <- predict(metamod, transf = exp, digits = 4)$pred
+    metaresults[j, 3] <- predict(metamod, transf = exp, digits = 4)$ci.lb
+    metaresults[j, 4] <- predict(metamod, transf = exp, digits = 4)$ci.ub
+    
+    metaresults$dis[1:nrow(metaresults)] <- vars[i]
+    metaresults$thres[1:nrow(metaresults)] <- "95th"
+  }
+  
+  #Now we create a place to store the results for each mortality type
+  if(i == 1){
+    allmetaresult <- metaresults
+  }else{
+    allmetaresult <- rbind(allmetaresult, metaresults)
+  }
+}
+
+holder <- allmetaresult
+holder$Analysis <- "DateDF7"
+#write.csv(holder, "/Users/kevin/Documents/ChenLabResearch/HurricaneProject/Coding/PostJournalComments/DateDF7.csv")
+```
