@@ -3,7 +3,7 @@
 This repository contains the analysis and materials for a **time-series study** investigating the association between **extreme rainfall events** and **cause-specific mortality** across counties in North Carolina between 2015 and 2018.
 
 The study examines how rare and intense precipitation events influence total and cause-specific mortality outcomes, using epidemiological modeling and meta-analytic techniques to obtain state-wide estimates.
-Please find the full paper here: https://iopscience.iop.org/article/10.1088/1748-9326/ad2dd2
+Please find the published paper here: https://iopscience.iop.org/article/10.1088/1748-9326/ad2dd2
 
 ---
 
